@@ -7,6 +7,8 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -16,6 +18,7 @@ import org.springframework.web.server.ResponseStatusException;
 import com.commons.beans.beans.PaymentRequest;
 import com.commons.beans.beans.PaymentResponse;
 import com.commons.beans.beans.Request;
+import com.commons.beans.beans.RequsetHeader;
 import com.commons.beans.beans.UserRequest;
 import com.commons.beans.beans.UserResponse;
 import com.commons.beans.beans.WalletRequest;
@@ -26,11 +29,17 @@ import com.test.sigmatech.transaction.model.Payment;
 import com.test.sigmatech.transaction.repository.PaymentRepository;
 import com.test.sigmatech.transaction.service.IPaymentService;
 
+
 @Service
 public class PaymentServiceImpl implements IPaymentService{
 
+	private  Logger log = LoggerFactory.getLogger(PaymentServiceImpl.class);
+	
 	@Autowired
 	private PaymentRepository repo;
+	
+	@Autowired
+	private UpdateStatusBrizziService briziService;
 	
 	@Autowired
 	private RestTemplate restTemplate;
@@ -44,11 +53,14 @@ public class PaymentServiceImpl implements IPaymentService{
 		ExecutorService executor = Executors.newFixedThreadPool(2);
 		Request<UserRequest> userRequest = new Request<UserRequest>();
 		Request<WalletRequest> walletRq = new Request<WalletRequest>();
-		
 		String uuidPayment = UUID.randomUUID().toString();
 		
+		RequsetHeader rqHeader = new RequsetHeader();
+		rqHeader.setChanel("API PAYMENT");
+		rqHeader.setRequestId(UUID.randomUUID().toString());
+		
 		PaymentResponse resp = new PaymentResponse();
-		if (repo.countPaymentPending(rq.getAccountNo(), rq.getTranCode(), AppConstants.STATUS_PENDING) < 1) {
+		if (repo.countPaymentPending(rq.getAccountNo(), rq.getTranCode(), AppConstants.STATUS_PROCESED) < 1) {
 			Payment payment = new Payment();
 			payment.setAccountNo(rq.getAccountNo());
 			payment.setPaymentCode(rq.getTranCode());
@@ -79,7 +91,9 @@ public class PaymentServiceImpl implements IPaymentService{
 						WalletRequest walletPayload = new WalletRequest();
 						walletPayload.setAccountNo(rq.getAccountNo());
 						walletPayload.setBallance(rq.getAmount());
+						walletPayload.setCountHit(0);
 						walletRq.setRequestPayload(walletPayload);
+						walletRq.setRequestHeader(rqHeader);
 						WalletResponse respBalance = restTemplate.postForObject(url_balance, walletRq, WalletResponse.class);
 						return respBalance;
 					}
@@ -101,6 +115,8 @@ public class PaymentServiceImpl implements IPaymentService{
 					if (respWallet.getReduced()) {
 						//versioning trx
 						payment.setStatusTrx(AppConstants.STATUS_COMPLETED);
+					}else {
+						payment.setStatusTrx(AppConstants.STATUS_PENDING);
 					}
 				}
 				
@@ -108,11 +124,16 @@ public class PaymentServiceImpl implements IPaymentService{
 				payment.setUpdatedAt(new Date());
 				payment.setUpdatedBy(AppConstants.SYSTEM);
 				payment.setEffectiveDate(new Date());
-				repo.save(payment);
+				payment = repo.save(payment);
 				
 				resp.setStatusTransaction(payment.getStatusTrx());
+				resp.setIdPayment(payment.getIdPayment());
 				resp.setPaymentDesc(TransactionCode.getTransactionCodeDesc(rq.getTranCode()));
+				if (resp.getStatusTransaction().equals(AppConstants.STATUS_PENDING)) {
+					briziService.updateStatusPending(walletRq.getRequestPayload(), url_reduce_balance, payment);
+				}
 			} catch (Exception e) {
+				log.error(e.getMessage());
 				throw e;
 			}
 		}else {
@@ -120,5 +141,34 @@ public class PaymentServiceImpl implements IPaymentService{
 		}
 		return resp;
 	}
+
+	@Override
+	public PaymentResponse updatePayment(PaymentRequest rq) throws Exception {
+		PaymentResponse resp = new PaymentResponse();
+		Request<WalletRequest> walletRq = new Request<WalletRequest>();
+
+		try {
+			Payment payment = repo.findById(rq.getIdPayment()).orElseThrow();
+			
+			WalletRequest walletPayload = new WalletRequest();
+			walletPayload.setAccountNo(rq.getAccountNo());
+			walletPayload.setBallance(rq.getAmount());
+			walletPayload.setCountHit(1);
+			walletRq.setRequestPayload(walletPayload);
+			
+			WalletResponse respWallet = restTemplate.postForObject(url_reduce_balance, walletRq, WalletResponse.class);
+			if (respWallet.getReduced()) {
+				//versioning trx
+				payment.setStatusTrx(AppConstants.STATUS_COMPLETED);
+			}else {
+				payment.setStatusTrx(AppConstants.STATUS_PENDING);
+			}
+			resp.setStatusTransaction(payment.getStatusTrx());
+		} catch (Exception e) {
+			log.error(e.getMessage());
+		}
+		return resp;
+	}
+	
 	
 }
