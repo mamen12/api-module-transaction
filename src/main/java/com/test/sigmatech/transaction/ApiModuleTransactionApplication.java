@@ -8,6 +8,7 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 
 @SpringBootApplication
 @ComponentScan({"com.test.sigmatech.transaction", "com.commons.beans"})
+@EnableScheduling
 public class ApiModuleTransactionApplication {
 
 	public static void main(String[] args) {
